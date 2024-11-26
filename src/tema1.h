@@ -50,7 +50,7 @@ typedef struct wrapper {
     pthread_barrier_t bar;
     pthread_barrier_t bar_sort;
     pthread_mutex_t mut;
-    pthread_mutex_t mut_words;
+    pthread_mutex_t mut_words[26];
     void *status;
 
 

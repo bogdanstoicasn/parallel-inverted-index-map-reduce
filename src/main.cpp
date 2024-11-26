@@ -23,7 +23,9 @@ void check_command_line(int argc, char **argv, wrapper *wrap)
 
     // initialize the mutex and the barrier
     pthread_mutex_init(&wrap->mut, NULL);
-    pthread_mutex_init(&wrap->mut_words, NULL);
+    for (int i = 0; i < 26; i++) {
+        pthread_mutex_init(&wrap->mut_words[i], NULL);
+    }
     pthread_barrier_init(&wrap->bar, NULL, wrap->p_map->mapper_num + wrap->p_red->reducer_num);
     pthread_barrier_init(&wrap->bar_sort, NULL, wrap->p_red->reducer_num);
 }
@@ -151,7 +153,7 @@ void *reducer_function(void *arg)
                 continue;
             }
             int index = word.first[0] - 'a';
-            pthread_mutex_lock(&wrap->mut_words);
+            pthread_mutex_lock(&wrap->mut_words[index]);
             bool found = false;
             for (long unsigned int i = 0; i < wrap->p_red->words[index].size(); i++) {
                 if (wrap->p_red->words[index][i].first == word.first) {
@@ -170,7 +172,7 @@ void *reducer_function(void *arg)
                 wrap->p_red->words[index][wrap->p_red->words[index].size() - 1].second.push_back(word.second);
             }
             
-            pthread_mutex_unlock(&wrap->mut_words);
+            pthread_mutex_unlock(&wrap->mut_words[index]);
 
         } 
     }
@@ -223,7 +225,9 @@ void free_memory(wrapper *wrap)
 
     // destroy the mutex and the barrier
     pthread_mutex_destroy(&wrap->mut);
-    pthread_mutex_destroy(&wrap->mut_words);
+    for (int i = 0; i < 26; i++) {
+        pthread_mutex_destroy(&wrap->mut_words[i]);
+    }
     pthread_barrier_destroy(&wrap->bar);
     pthread_barrier_destroy(&wrap->bar_sort);
 }
