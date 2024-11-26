@@ -103,10 +103,14 @@ void *mapper_function(void *arg)
             for (int i = 0; word[i]; i++) {
                 word[i] = tolower(word[i]);
             }
+            
+            // now ignore the special characters, but if we have word1-word2 we consider it as word1word2
             for (int i = 0; word[i]; i++) {
                 if (!isalpha(word[i])) {
-                    word[i] = '\0';
-                    break;
+                    for (int j = i; word[j]; j++) {
+                        word[j] = word[j + 1];
+                    }
+                    i--;
                 }
             }
             
@@ -155,6 +159,7 @@ void *reducer_function(void *arg)
                     // if index already exists dont add it again
                     if (std::find(wrap->p_red->words[index][i].second.begin(), wrap->p_red->words[index][i].second.end(), word.second) == wrap->p_red->words[index][i].second.end()) {
                         wrap->p_red->words[index][i].second.push_back(word.second);
+
                     }
                     break;
                 }
@@ -164,6 +169,7 @@ void *reducer_function(void *arg)
                 wrap->p_red->words[index].push_back(std::make_pair(word.first, std::vector<int>()));
                 wrap->p_red->words[index][wrap->p_red->words[index].size() - 1].second.push_back(word.second);
             }
+            
             pthread_mutex_unlock(&wrap->mut_words);
 
         } 
@@ -193,6 +199,11 @@ void *reducer_function(void *arg)
                 }
                 return a.second.size() > b.second.size();
             });
+        
+        // sort the file indexes ascending
+        for (long unsigned int i = 0; i < wrap->p_red->words[index].size(); i++) {
+            std::sort(wrap->p_red->words[index][i].second.begin(), wrap->p_red->words[index][i].second.end());
+        }
     }
     
     
@@ -250,7 +261,7 @@ int main(int argc, char **argv)
     // write in the files a.txt, b.txt, etc
     // the format is: word:[file_id1 file_id2 ...]
     for (long unsigned int i = 0; i < 26; i++) {
-        std::string file_name = "../";
+        std::string file_name = "";
         file_name += (char)('a' + i);
         file_name += ".txt";
         FILE *file = fopen(file_name.c_str(), "w");
