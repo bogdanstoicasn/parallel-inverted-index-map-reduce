@@ -30,7 +30,9 @@ typedef struct reducer {
 
     pthread_t *threads;
     int *ids;
-    int current_file_id; // used to keep track of what vector to reduce
+    
+    // queue to hold indexes of files to be processed
+    std::queue<int> files;
 
     // the reducers have only a list of {word, file_id1, file_id2, ...}
     // index 0 is letter a, index 1 is letter b, etc
@@ -45,6 +47,7 @@ typedef struct wrapper {
 
     pthread_barrier_t bar;
     pthread_mutex_t mut;
+    pthread_mutex_t mut_words;
     void *status;
 
 
