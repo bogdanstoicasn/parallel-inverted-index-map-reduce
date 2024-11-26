@@ -1,6 +1,6 @@
 #include "tema1.h"
 
-void check_command_line(int argc, char **argv, mapper *map, reducer *reducer)
+void check_command_line(int argc, char **argv, wrapper *wrap)
 {
     if (argc != 4) {
         fprintf(stderr, "Usage: %s <mapper> <reducer> <input_file>\n", argv[0]);
@@ -8,25 +8,30 @@ void check_command_line(int argc, char **argv, mapper *map, reducer *reducer)
     }
 
     // mapper section
-    map->mapper_num = atoi(argv[1]);
-    printf("Number of mappers: %d\n", map->mapper_num);
+    wrap->p_map->mapper_num = atoi(argv[1]);
+    printf("Number of mappers: %d\n", wrap->p_map->mapper_num);
 
-    map->threads = (pthread_t *)malloc(map->mapper_num * sizeof(pthread_t));
-    map->ids = (int *)malloc(map->mapper_num * sizeof(int));
+    wrap->p_map->threads = (pthread_t *)malloc(wrap->p_map->mapper_num * sizeof(pthread_t));
+    wrap->p_map->ids = (int *)malloc(wrap->p_map->mapper_num * sizeof(int));
 
-    map->current_file_id = 0;
-
-    pthread_mutex_init(&map->mut, NULL);
+    wrap->p_map->current_file_id = 0;
 
     // reducer section
-    reducer->reducer_num = atoi(argv[2]);
-    printf("Number of reducers: %d\n", reducer->reducer_num);
+    wrap->p_red->reducer_num = atoi(argv[2]);
+    printf("Number of reducers: %d\n", wrap->p_red->reducer_num);
 
-    reducer->threads = (pthread_t *)malloc(reducer->reducer_num * sizeof(pthread_t));
-    reducer->ids = (int *)malloc(reducer->reducer_num * sizeof(int));
+    wrap->p_red->threads = (pthread_t *)malloc(wrap->p_red->reducer_num * sizeof(pthread_t));
+    wrap->p_red->ids = (int *)malloc(wrap->p_red->reducer_num * sizeof(int));
+    wrap->p_red->words.resize(26);
+
+    wrap->p_red->current_file_id = 0;
+
+    // initialize the mutex and the barrier
+    pthread_mutex_init(&wrap->mut, NULL);
+    pthread_barrier_init(&wrap->bar, NULL, wrap->p_map->mapper_num + wrap->p_red->reducer_num);
 }
 
-void parse_files_names(mapper *map, char *input_file)
+void parse_files_names(wrapper *wrap, char *input_file)
 {
     std::string input_file_str = "../checker/";
     input_file_str += input_file;
@@ -40,13 +45,13 @@ void parse_files_names(mapper *map, char *input_file)
     fscanf(file, "%d", &number_of_files);
 
     // initialize the map->words vector with the correct number of files
-    map->words.resize(number_of_files);
+    wrap->p_map->words.resize(number_of_files);
 
     // read the filenames and add them to the queue
     for (int i = 0; i < number_of_files; i++) {
         char file_name[100];
         fscanf(file, "%s", file_name);
-        map->files.push(file_name);
+        wrap->p_map->files.push(std::string(file_name));
     }
 
     fclose(file);
@@ -55,20 +60,20 @@ void parse_files_names(mapper *map, char *input_file)
 
 void *mapper_function(void *arg)
 {
-    mapper *map = (mapper *)arg;
+    wrapper *wrap = (wrapper *)arg;
     std::string input_file_base = "../checker/";
 
     while (1) {
-        pthread_mutex_lock(&map->mut);
-        if (map->files.empty()) {
-            pthread_mutex_unlock(&map->mut);
+        pthread_mutex_lock(&wrap->mut);
+        if (wrap->p_map->files.empty()) {
+            pthread_mutex_unlock(&wrap->mut);
             break;
         }
 
-        std::string file_name = map->files.front();
-        map->files.pop();
-        int file_id = map->current_file_id++;
-        pthread_mutex_unlock(&map->mut);
+        std::string file_name = wrap->p_map->files.front();
+        wrap->p_map->files.pop();
+        int file_id = wrap->p_map->current_file_id++;
+        pthread_mutex_unlock(&wrap->mut);
 
         printf("Mapper processing file %s (File ID: %d), by thread %ld\n", file_name.c_str(), file_id, pthread_self());
 
@@ -99,61 +104,134 @@ void *mapper_function(void *arg)
                     break;
                 }
             }
-
-            map->words[file_id].push_back(std::make_pair(std::string(word), file_id));
+            
+            wrap->p_map->words[file_id].push(std::make_pair(std::string(word), file_id));
             //pthread_mutex_unlock(&map->mut);
         }
 
         fclose(file);
     }
 
+    // wait till all mappers finish
+    pthread_barrier_wait(&wrap->bar);
+
     return NULL;
 }
 
 void *reducer_function(void *arg)
 {
+    // Wait until all mappers finish
+    pthread_barrier_wait(&((wrapper *)arg)->bar);
+
+    wrapper *wrap = (wrapper *)arg;
+
+    pthread_mutex_lock(&wrap->mut);
+    int reducer_id = wrap->p_red->current_file_id++;
+    pthread_mutex_unlock(&wrap->mut);
+
+    printf("Reducer processing file %d, by thread %ld\n", reducer_id, pthread_self());
+
+    // Iterate through all the words and add them to the reducer's list
+    for (long unsigned int i = 0; i < wrap->p_map->words.size(); ++i) {
+        while (!wrap->p_map->words[i].empty()) {
+            std::pair<std::string, int> word = wrap->p_map->words[i].front();
+            wrap->p_map->words[i].pop();
+
+            int index = word.first[0] - 'a'; // Determine the bucket for the word
+
+            pthread_mutex_lock(&wrap->mut);
+
+            bool found = false;
+            for (auto &entry : wrap->p_red->words[index]) {
+                if (entry.first == word.first) { // Word found
+                    found = true;
+                    if (std::find(entry.second.begin(), entry.second.end(), word.second) == entry.second.end()) {
+                        entry.second.push_back(word.second); // Add file ID if not already present
+                    }
+                    break;
+                }
+            }
+
+            if (!found) {
+                // Add the word and the file ID if it's not already in the list
+                wrap->p_red->words[index].emplace_back(word.first, std::vector<int>{word.second});
+            }
+
+            pthread_mutex_unlock(&wrap->mut);
+        }
+    }
+    
+
     return NULL;
 }
 
 
-void free_memory(mapper *map, reducer *red)
+void free_memory(wrapper *wrap)
 {
     // mapper section
-    free(map->threads);
-    free(map->ids);
-    pthread_mutex_destroy(&map->mut);
+    free(wrap->p_map->threads);
+    free(wrap->p_map->ids);
 
     // reducer section
-    free(red->threads);
-    free(red->ids);
+    free(wrap->p_red->threads);
+    free(wrap->p_red->ids);
+
+    // destroy the mutex and the barrier
+    pthread_mutex_destroy(&wrap->mut);
+    pthread_barrier_destroy(&wrap->bar);
 }
 
 int main(int argc, char **argv)
 {
+    wrapper wrap;
     mapper map;
     reducer red;
-    check_command_line(argc, argv, &map, &red);
+    wrap.p_map = &map;
+    wrap.p_red = &red;
 
-    parse_files_names(&map, argv[3]);
+    check_command_line(argc, argv, &wrap);
 
-    for (int i = 0; i < map.mapper_num; i++) {
-        map.ids[i] = i;
-        pthread_create(&map.threads[i], NULL, mapper_function, &map);
-    }
+    parse_files_names(&wrap, argv[3]);
 
-    for (int i = 0; i < map.mapper_num; i++) {
-        pthread_join(map.threads[i], &map.status);
-    }
-
-    // print the words
-    for (long unsigned int i = 0; i < map.words.size(); i++) {
-        printf("File ID: %ld\n", i);
-        for (long unsigned int j = 0; j < map.words[i].size(); j++) {
-            printf("%s %d\n", map.words[i][j].first.c_str(), map.words[i][j].second);
+    for (int i = 0; i < map.mapper_num + red.reducer_num; i++) {
+        if (i < map.mapper_num) {
+            map.ids[i] = i;
+            pthread_create(&map.threads[i], NULL, mapper_function, &wrap);
+        } else {
+            red.ids[i - map.mapper_num] = i;
+            pthread_create(&red.threads[i - map.mapper_num], NULL, reducer_function, &wrap);
         }
     }
 
-    free_memory(&map, &red);
+    for (int i = 0; i < map.mapper_num + red.reducer_num; i++) {
+        if (i < map.mapper_num) {
+            pthread_join(map.threads[i], &wrap.status);
+        } else {
+            pthread_join(red.threads[i - map.mapper_num], &wrap.status);
+        }
+    }
+
+    // print the words
+    // for (long unsigned int i = 0; i < map.words.size(); i++) {
+    //     printf("File ID: %ld\n", i);
+    //     while (!map.words[i].empty()) {
+    //         printf("%s %d word size: %ld\n", map.words[i].front().first.c_str(), map.words[i].front().second, map.words[i].front().first.size());
+    //         map.words[i].pop();
+    //     }
+    // }
+
+    // print the words sorted after the reducers
+    for (long unsigned int i = 0; i < 26; i++) {
+        for (long unsigned int j = 0; j < red.words[i].size(); j++) {
+            printf("%s ", red.words[i][j].first.c_str());
+            for (long unsigned int k = 0; k < red.words[i][j].second.size(); k++) {
+                printf("%d ", red.words[i][j].second[k]);
+            }
+            printf("\n");
+        }
+    }
+
+    free_memory(&wrap);
 
     return 0;
 }
