@@ -33,10 +33,12 @@ typedef struct reducer {
     
     // queue to hold indexes of files to be processed
     std::queue<int> files;
+    // quue for letters
+    std::queue<std::string> letters;
 
     // the reducers have only a list of {word, file_id1, file_id2, ...}
     // index 0 is letter a, index 1 is letter b, etc
-    std::vector<std::vector<std::pair<std::string, std::vector<int>>>> words;
+    std::vector<std::pair<std::string, std::vector<int>>> words[26];
 
 
 } reducer;
@@ -46,6 +48,7 @@ typedef struct wrapper {
     reducer *p_red;
 
     pthread_barrier_t bar;
+    pthread_barrier_t bar_sort;
     pthread_mutex_t mut;
     pthread_mutex_t mut_words;
     void *status;

@@ -9,7 +9,6 @@ void check_command_line(int argc, char **argv, wrapper *wrap)
 
     // mapper section
     wrap->p_map->mapper_num = atoi(argv[1]);
-    //printf("Number of mappers: %d\n", wrap->p_map->mapper_num);
 
     wrap->p_map->threads = (pthread_t *)malloc(wrap->p_map->mapper_num * sizeof(pthread_t));
     wrap->p_map->ids = (int *)malloc(wrap->p_map->mapper_num * sizeof(int));
@@ -18,20 +17,15 @@ void check_command_line(int argc, char **argv, wrapper *wrap)
 
     // reducer section
     wrap->p_red->reducer_num = atoi(argv[2]);
-    //printf("Number of reducers: %d\n", wrap->p_red->reducer_num);
 
     wrap->p_red->threads = (pthread_t *)malloc(wrap->p_red->reducer_num * sizeof(pthread_t));
     wrap->p_red->ids = (int *)malloc(wrap->p_red->reducer_num * sizeof(int));
-    
-    wrap->p_red->words.resize(26);  // Ensure there are 26 slots for the letters a-z
-    for (int i = 0; i < 26; ++i) {
-        wrap->p_red->words[i].clear();  // Ensure each inner vector is empty and initialized
-    }
 
     // initialize the mutex and the barrier
     pthread_mutex_init(&wrap->mut, NULL);
     pthread_mutex_init(&wrap->mut_words, NULL);
     pthread_barrier_init(&wrap->bar, NULL, wrap->p_map->mapper_num + wrap->p_red->reducer_num);
+    pthread_barrier_init(&wrap->bar_sort, NULL, wrap->p_red->reducer_num);
 }
 
 void parse_files_names(wrapper *wrap, char *input_file)
@@ -53,6 +47,11 @@ void parse_files_names(wrapper *wrap, char *input_file)
     // put the index of the files in the queue
     for (int i = 0; i < number_of_files; i++) {
         wrap->p_red->files.push(i);
+    }
+
+    // push the letters in the queue
+    for (int i = 0; i < 26; i++) {
+        wrap->p_red->letters.push(std::string(1, (char)('a' + i)));
     }
 
     // read the filenames and add them to the queue
@@ -83,7 +82,7 @@ void *mapper_function(void *arg)
         int file_id = wrap->p_map->current_file_id++;
         pthread_mutex_unlock(&wrap->mut);
 
-        //printf("Mapper processing file %s (File ID: %d), by thread %ld\n", file_name.c_str(), file_id, pthread_self());
+
 
         // Open the file
         FILE *file = fopen((input_file_base + file_name).c_str(), "r");
@@ -100,7 +99,6 @@ void *mapper_function(void *arg)
             }
 
             // Add the word to the list of words
-
             // Convert the word to lowercase and clean it
             for (int i = 0; word[i]; i++) {
                 word[i] = tolower(word[i]);
@@ -140,41 +138,61 @@ void *reducer_function(void *arg)
 
         int file_id = wrap->p_red->files.front();
         wrap->p_red->files.pop();
-
         pthread_mutex_unlock(&wrap->mut);
 
-        //printf("Reducer processing file %d, by thread %ld\n", file_id, pthread_self());
-
-        // Go through all the words from the mappers
         while (!wrap->p_map->words[file_id].empty()) {
             std::pair<std::string, int> word = wrap->p_map->words[file_id].front();
             wrap->p_map->words[file_id].pop();
-
+            if (word.first.empty()) {
+                continue;
+            }
             int index = word.first[0] - 'a';
-
             pthread_mutex_lock(&wrap->mut_words);
             bool found = false;
-            if (index >= 26) {
-                fprintf(stderr, "Error: Word %s does not start with a letter\n", word.first.c_str());
-                exit(EXIT_FAILURE);
-            }
             for (long unsigned int i = 0; i < wrap->p_red->words[index].size(); i++) {
                 if (wrap->p_red->words[index][i].first == word.first) {
                     found = true;
-
-                    // check if the file_id is already in the vector
+                    // if index already exists dont add it again
                     if (std::find(wrap->p_red->words[index][i].second.begin(), wrap->p_red->words[index][i].second.end(), word.second) == wrap->p_red->words[index][i].second.end()) {
                         wrap->p_red->words[index][i].second.push_back(word.second);
                     }
                     break;
                 }
             }
-            if (!found) {
-                wrap->p_red->words[index].push_back(std::make_pair(word.first, std::vector<int>{word.second}));
-            }
 
+            if (!found) {
+                wrap->p_red->words[index].push_back(std::make_pair(word.first, std::vector<int>()));
+                wrap->p_red->words[index][wrap->p_red->words[index].size() - 1].second.push_back(word.second);
+            }
             pthread_mutex_unlock(&wrap->mut_words);
+
+        } 
+    }
+    // wait till all reducers finish
+    pthread_barrier_wait(&wrap->bar_sort);
+
+    while (1) {
+        pthread_mutex_lock(&wrap->mut);
+        if (wrap->p_red->letters.empty()) {
+            pthread_mutex_unlock(&wrap->mut);
+            break;
         }
+
+        std::string letter = wrap->p_red->letters.front();
+        wrap->p_red->letters.pop();
+        pthread_mutex_unlock(&wrap->mut);
+
+        int index = letter[0] - 'a';
+
+        // sort the words by descending order of the number of files they appear in
+        // and lexographically ascending order
+        std::sort(wrap->p_red->words[index].begin(), wrap->p_red->words[index].end(), 
+            [](const std::pair<std::string, std::vector<int>> &a, const std::pair<std::string, std::vector<int>> &b) {
+                if (a.second.size() == b.second.size()) {
+                    return a.first < b.first;
+                }
+                return a.second.size() > b.second.size();
+            });
     }
     
     
@@ -196,6 +214,7 @@ void free_memory(wrapper *wrap)
     pthread_mutex_destroy(&wrap->mut);
     pthread_mutex_destroy(&wrap->mut_words);
     pthread_barrier_destroy(&wrap->bar);
+    pthread_barrier_destroy(&wrap->bar_sort);
 }
 
 int main(int argc, char **argv)
@@ -227,26 +246,6 @@ int main(int argc, char **argv)
             pthread_join(red.threads[i - map.mapper_num], &wrap.status);
         }
     }
-
-    // print the words
-    // for (long unsigned int i = 0; i < map.words.size(); i++) {
-    //     printf("File ID: %ld\n", i);
-    //     while (!map.words[i].empty()) {
-    //         printf("%s %d word size: %ld\n", map.words[i].front().first.c_str(), map.words[i].front().second, map.words[i].front().first.size());
-    //         map.words[i].pop();
-    //     }
-    // }
-
-    // print the words sorted after the reducers
-    // for (long unsigned int i = 0; i < 26; i++) {
-    //     for (long unsigned int j = 0; j < red.words[i].size(); j++) {
-    //         printf("%s ", red.words[i][j].first.c_str());
-    //         for (long unsigned int k = 0; k < red.words[i][j].second.size(); k++) {
-    //             printf("%d ", red.words[i][j].second[k]);
-    //         }
-    //         printf("\n");
-    //     }
-    // }
 
     // write in the files a.txt, b.txt, etc
     // the format is: word:[file_id1 file_id2 ...]
