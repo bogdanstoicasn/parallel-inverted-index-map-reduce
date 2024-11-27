@@ -93,14 +93,12 @@ reducer processes an index at a time.
 
 2. Processes the key-value pairs at the specified index.
 
-3. Locks the beginning 
-
-4. Checks for word existence. If it exists in the vector, the next step is to
+3. Checks for word existence. If it exists in the vector, the next step is to
 check the appearance of the `file_id`. If the `file_id` exists, ignore the
 word. If the `file_id` does not exist, add the `file_id` to the vector.
 If the word does not exist, add the word and the `file_id` to the vector.
 
-5. Waits for all reducers to finish processing their indexes before moving to
+4. Waits for all reducers to finish processing their indexes before moving to
 the sorting phase which is done dinamically.
 
 To ensure efficient and thread-safe access to the shared data structures, a
