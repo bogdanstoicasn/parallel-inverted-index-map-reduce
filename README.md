@@ -77,7 +77,7 @@ mapper processes a file at a time.
 in lowercase and removing any non-alphanumeric characters.
 
 3. Generates key-value pairs ``(word - file_id)` and adds them to a vector of
-queues, where the index of the vector is the `file_id`.
+queues, where the index of the vector is the `file_id``.
 
 By locking the mutex, we ensure that only one mapper processes a file at a time
 The file queue logic dynamically distributes files to available mappers, ensuring efficient load balancing.
